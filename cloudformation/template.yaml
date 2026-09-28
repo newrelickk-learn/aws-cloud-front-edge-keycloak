@@ -274,10 +274,12 @@ Resources:
         UserPoolClientId: !Ref UserPoolClient
         UserPoolClientSecret: !GetAtt UserPoolClientSecret.ClientSecret
         UserPoolGroupName: !Ref UserPoolGroupName
-        # CreateCloudFrontDistribution: "false" のため、この値は nested app 内の
-        # CloudFront::Distribution リソース(未作成)専用であり実質参照されない。代表ドメインのみ渡す。
-        Aliases: !Ref AppDomainName1
-        AcmCertificateArn: !Ref AcmCertificateArn
+        # 実際にリリースされているSAR v2.3.2のパラメータ名は Aliases ではなく AlternateDomainNames。
+        # AcmCertificateArn パラメータはこのバージョンには存在しない(CreateCloudFrontDistribution:
+        # "false" のためCloudFront/証明書はこのnested app内では扱われない)。
+        # AlternateDomainNames を指定すると、持ち込んだ UserPoolClientId 側の CallbackURLs/LogoutURLs
+        # にもこのドメインの分が自動追加される(こちら側でも明示的に設定済みなので重複しても実害はない)。
+        AlternateDomainNames: !Ref AppDomainName1
         EnableSPAMode: "false"
         CreateCloudFrontDistribution: "false"
 
