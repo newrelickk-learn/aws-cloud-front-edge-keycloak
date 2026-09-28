@@ -36,7 +36,8 @@ aws cloudformation deploy \
   --parameter-overrides \
     ExistingS3BucketName=my-existing-bucket \
     ExistingS3BucketRegion=ap-northeast-1 \
-    AppDomainNames="files.example.com\,files2.example.com" \
+    AppDomainName1=files.example.com \
+    AppDomainName2=files2.example.com \
     AcmCertificateArn=arn:aws:acm:us-east-1:123456789012:certificate/xxxxxxxx \
     HostedZoneId=Z0123456789ABCDEFGHIJ \
     KeycloakIssuerUrl=https://keycloak.example.com/realms/myrealm \
@@ -46,13 +47,12 @@ aws cloudformation deploy \
     UserPoolGroupName=NRKKUsers
 ```
 
-`AppDomainNames` は最大5件までカンマ区切りで指定可能(1件のみでも良い)。AWS CLIの
-`--parameter-overrides` にカンマ区切り値を渡す場合、シェルにカンマを解釈させないよう
-`\,` でエスケープするか、パラメータファイル(`--parameter-overrides file://params.json`)を
-使うこと。指定した全ドメインは同一のACM証明書(SAN)でカバーする必要がある。
+`AppDomainName1`(必須)〜`AppDomainName5`(任意)で最大5件のドメインを指定できる。
+使わないスロットは省略(デフォルト空文字)してよい。指定した全ドメインは同一のACM証明書(SAN)で
+カバーする必要がある。
 
 `HostedZoneId` を省略(空文字)する場合はDNSレコードを手動で設定すること。指定した場合、
-`AppDomainNames` に含む全ドメインが同一のHosted Zoneに属している前提でAliasレコードを
+`AppDomainName1`〜`5`に含む全ドメインが同一のHosted Zoneに属している前提でAliasレコードを
 まとめて作成する。
 
 ## デプロイ後に必要な手動作業
@@ -75,7 +75,7 @@ Cognito User Pool (`CognitoUserPoolId` Output) の `NRKKUsers`(既定値) グル
 
 ### 3. 動作確認
 
-`AppUrl` Outputの値 (`AppDomainNames`の1件目のドメインのURL) にアクセスし、Keycloakのログイン画面に
+`AppUrl` Outputの値 (`AppDomainName1`のURL) にアクセスし、Keycloakのログイン画面に
 リダイレクトされることを確認する。ログイン後、グループに所属していないユーザーは
 アクセスを拒否されることも確認する。
 

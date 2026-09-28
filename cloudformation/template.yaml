@@ -1,7 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Transform:
-  - AWS::Serverless-2016-10-31
-  - AWS::LanguageExtensions
+Transform: AWS::Serverless-2016-10-31
 Description: >
   CloudFront + Keycloak(OIDC) SSO で既存S3バケットを保護する構成。
   cloudfront-authorization-at-edge (SAR, aws-samples) の Lambda@Edge 関数のみを
@@ -27,12 +25,34 @@ Parameters:
       (CloudFrontのS3オリジンはリージョンを問わず接続できる)。バケットの実リージョンと異なる値を
       指定するとオリジン接続エラーになるため、必ず実際のリージョンを指定すること。
 
-  AppDomainNames:
-    Type: CommaDelimitedList
+  AppDomainName1:
+    Type: String
     Description: >
-      CloudFrontに割り当てるカスタムドメイン名 (最大5件、カンマ区切り。例: files.example.com,files2.example.com)。
-      1件目のドメインが Cognito のコールバックURL基準・アプリURL出力などの代表ドメインとして扱われる。
-      全ドメインを1枚のACM証明書(SAN)でカバーする必要がある。6件以上必要な場合はテンプレートの拡張が必要。
+      CloudFrontに割り当てるカスタムドメイン名(代表ドメイン、必須。例: files.example.com)。
+      Cognito のコールバックURL基準・アプリURL出力などの基準ドメインとして扱われる。
+
+  AppDomainName2:
+    Type: String
+    Default: ""
+    Description: 追加のカスタムドメイン名(任意、2件目)。使わない場合は空のままで良い。
+
+  AppDomainName3:
+    Type: String
+    Default: ""
+    Description: 追加のカスタムドメイン名(任意、3件目)。使わない場合は空のままで良い。
+
+  AppDomainName4:
+    Type: String
+    Default: ""
+    Description: 追加のカスタムドメイン名(任意、4件目)。使わない場合は空のままで良い。
+
+  AppDomainName5:
+    Type: String
+    Default: ""
+    Description: >
+      追加のカスタムドメイン名(任意、5件目)。使わない場合は空のままで良い。
+      AppDomainName1〜5で指定した全ドメインを1枚のACM証明書(SAN)でカバーする必要がある。
+      6件以上必要な場合はテンプレートの拡張(AppDomainName6以降とそれに対応するCondition/リソースの追加)が必要。
 
   AcmCertificateArn:
     Type: String
@@ -42,7 +62,7 @@ Parameters:
     Type: String
     Default: ""
     Description: >
-      任意。Route53のHosted Zone IDを指定すると AppDomainNames の各ドメインへのAliasレコードを
+      任意。Route53のHosted Zone IDを指定すると AppDomainName1〜5 の各ドメインへのAliasレコードを
       自動作成する(全ドメインが同一Hosted Zoneに属することが前提)。DNSを手動管理する場合は
       空のままで良い。
 
@@ -82,16 +102,11 @@ Parameters:
 Conditions:
   CreateDnsRecord: !Not [!Equals [!Ref HostedZoneId, ""]]
 
-  # AppDomainNames の件数に応じた2〜5件目の存在判定 (最大5件まで対応)
-  HasDomain2: !Not [!Equals [{"Fn::Length": !Ref AppDomainNames}, 1]]
-  HasDomain3: !Or
-    - !Equals [{"Fn::Length": !Ref AppDomainNames}, 3]
-    - !Equals [{"Fn::Length": !Ref AppDomainNames}, 4]
-    - !Equals [{"Fn::Length": !Ref AppDomainNames}, 5]
-  HasDomain4: !Or
-    - !Equals [{"Fn::Length": !Ref AppDomainNames}, 4]
-    - !Equals [{"Fn::Length": !Ref AppDomainNames}, 5]
-  HasDomain5: !Equals [{"Fn::Length": !Ref AppDomainNames}, 5]
+  # AppDomainName2〜5 が指定されているか (空文字なら未使用スロットとして扱う)
+  HasDomain2: !Not [!Equals [!Ref AppDomainName2, ""]]
+  HasDomain3: !Not [!Equals [!Ref AppDomainName3, ""]]
+  HasDomain4: !Not [!Equals [!Ref AppDomainName4, ""]]
+  HasDomain5: !Not [!Equals [!Ref AppDomainName5, ""]]
 
   CreateDnsRecord2: !And [!Condition CreateDnsRecord, !Condition HasDomain2]
   CreateDnsRecord3: !And [!Condition CreateDnsRecord, !Condition HasDomain3]
@@ -150,61 +165,17 @@ Resources:
       ExplicitAuthFlows: [ALLOW_REFRESH_TOKEN_AUTH]
       PreventUserExistenceErrors: ENABLED
       CallbackURLs:
-        - !Sub
-          - "https://${Domain}/parseauth"
-          - Domain: !Select [0, !Ref AppDomainNames]
-        - !If
-          - HasDomain2
-          - !Sub
-            - "https://${Domain}/parseauth"
-            - Domain: !Select [1, !Ref AppDomainNames]
-          - !Ref AWS::NoValue
-        - !If
-          - HasDomain3
-          - !Sub
-            - "https://${Domain}/parseauth"
-            - Domain: !Select [2, !Ref AppDomainNames]
-          - !Ref AWS::NoValue
-        - !If
-          - HasDomain4
-          - !Sub
-            - "https://${Domain}/parseauth"
-            - Domain: !Select [3, !Ref AppDomainNames]
-          - !Ref AWS::NoValue
-        - !If
-          - HasDomain5
-          - !Sub
-            - "https://${Domain}/parseauth"
-            - Domain: !Select [4, !Ref AppDomainNames]
-          - !Ref AWS::NoValue
+        - !Sub "https://${AppDomainName1}/parseauth"
+        - !If [HasDomain2, !Sub "https://${AppDomainName2}/parseauth", !Ref AWS::NoValue]
+        - !If [HasDomain3, !Sub "https://${AppDomainName3}/parseauth", !Ref AWS::NoValue]
+        - !If [HasDomain4, !Sub "https://${AppDomainName4}/parseauth", !Ref AWS::NoValue]
+        - !If [HasDomain5, !Sub "https://${AppDomainName5}/parseauth", !Ref AWS::NoValue]
       LogoutURLs:
-        - !Sub
-          - "https://${Domain}/"
-          - Domain: !Select [0, !Ref AppDomainNames]
-        - !If
-          - HasDomain2
-          - !Sub
-            - "https://${Domain}/"
-            - Domain: !Select [1, !Ref AppDomainNames]
-          - !Ref AWS::NoValue
-        - !If
-          - HasDomain3
-          - !Sub
-            - "https://${Domain}/"
-            - Domain: !Select [2, !Ref AppDomainNames]
-          - !Ref AWS::NoValue
-        - !If
-          - HasDomain4
-          - !Sub
-            - "https://${Domain}/"
-            - Domain: !Select [3, !Ref AppDomainNames]
-          - !Ref AWS::NoValue
-        - !If
-          - HasDomain5
-          - !Sub
-            - "https://${Domain}/"
-            - Domain: !Select [4, !Ref AppDomainNames]
-          - !Ref AWS::NoValue
+        - !Sub "https://${AppDomainName1}/"
+        - !If [HasDomain2, !Sub "https://${AppDomainName2}/", !Ref AWS::NoValue]
+        - !If [HasDomain3, !Sub "https://${AppDomainName3}/", !Ref AWS::NoValue]
+        - !If [HasDomain4, !Sub "https://${AppDomainName4}/", !Ref AWS::NoValue]
+        - !If [HasDomain5, !Sub "https://${AppDomainName5}/", !Ref AWS::NoValue]
 
   # ---------------------------------------------------------------------
   # UserPoolClient の ClientSecret は CloudFormation の GetAtt で取得できないため、
@@ -303,7 +274,9 @@ Resources:
         UserPoolClientId: !Ref UserPoolClient
         UserPoolClientSecret: !GetAtt UserPoolClientSecret.ClientSecret
         UserPoolGroupName: !Ref UserPoolGroupName
-        Aliases: !Join [",", !Ref AppDomainNames]
+        # CreateCloudFrontDistribution: "false" のため、この値は nested app 内の
+        # CloudFront::Distribution リソース(未作成)専用であり実質参照されない。代表ドメインのみ渡す。
+        Aliases: !Ref AppDomainName1
         AcmCertificateArn: !Ref AcmCertificateArn
         EnableSPAMode: "false"
         CreateCloudFrontDistribution: "false"
@@ -315,9 +288,7 @@ Resources:
     Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
     Properties:
       CloudFrontOriginAccessIdentityConfig:
-        Comment: !Sub
-          - "OAI for ${Domain}"
-          - Domain: !Select [0, !Ref AppDomainNames]
+        Comment: !Sub "OAI for ${AppDomainName1}"
 
   ExistingBucketPolicy:
     Type: AWS::S3::BucketPolicy
@@ -339,7 +310,12 @@ Resources:
         Enabled: true
         Comment: !Sub "${AWS::StackName} - Keycloak SSO protected S3"
         DefaultRootObject: index.html
-        Aliases: !Ref AppDomainNames
+        Aliases:
+          - !Ref AppDomainName1
+          - !If [HasDomain2, !Ref AppDomainName2, !Ref AWS::NoValue]
+          - !If [HasDomain3, !Ref AppDomainName3, !Ref AWS::NoValue]
+          - !If [HasDomain4, !Ref AppDomainName4, !Ref AWS::NoValue]
+          - !If [HasDomain5, !Ref AppDomainName5, !Ref AWS::NoValue]
         ViewerCertificate:
           AcmCertificateArn: !Ref AcmCertificateArn
           SslSupportMethod: sni-only
@@ -410,7 +386,7 @@ Resources:
     Condition: CreateDnsRecord
     Properties:
       HostedZoneId: !Ref HostedZoneId
-      Name: !Select [0, !Ref AppDomainNames]
+      Name: !Ref AppDomainName1
       Type: A
       AliasTarget:
         DNSName: !GetAtt CloudFrontDistribution.DomainName
@@ -422,7 +398,7 @@ Resources:
     Condition: CreateDnsRecord2
     Properties:
       HostedZoneId: !Ref HostedZoneId
-      Name: !Select [1, !Ref AppDomainNames]
+      Name: !Ref AppDomainName2
       Type: A
       AliasTarget:
         DNSName: !GetAtt CloudFrontDistribution.DomainName
@@ -433,7 +409,7 @@ Resources:
     Condition: CreateDnsRecord3
     Properties:
       HostedZoneId: !Ref HostedZoneId
-      Name: !Select [2, !Ref AppDomainNames]
+      Name: !Ref AppDomainName3
       Type: A
       AliasTarget:
         DNSName: !GetAtt CloudFrontDistribution.DomainName
@@ -444,7 +420,7 @@ Resources:
     Condition: CreateDnsRecord4
     Properties:
       HostedZoneId: !Ref HostedZoneId
-      Name: !Select [3, !Ref AppDomainNames]
+      Name: !Ref AppDomainName4
       Type: A
       AliasTarget:
         DNSName: !GetAtt CloudFrontDistribution.DomainName
@@ -455,7 +431,7 @@ Resources:
     Condition: CreateDnsRecord5
     Properties:
       HostedZoneId: !Ref HostedZoneId
-      Name: !Select [4, !Ref AppDomainNames]
+      Name: !Ref AppDomainName5
       Type: A
       AliasTarget:
         DNSName: !GetAtt CloudFrontDistribution.DomainName
@@ -467,10 +443,8 @@ Outputs:
     Value: !GetAtt CloudFrontDistribution.DomainName
 
   AppUrl:
-    Description: アプリケーションURL (代表ドメイン=1件目のAppDomainNames)
-    Value: !Sub
-      - "https://${Domain}/"
-      - Domain: !Select [0, !Ref AppDomainNames]
+    Description: アプリケーションURL (代表ドメイン=AppDomainName1)
+    Value: !Sub "https://${AppDomainName1}/"
 
   CognitoUserPoolId:
     Value: !Ref UserPool
