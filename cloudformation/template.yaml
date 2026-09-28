@@ -18,6 +18,15 @@ Parameters:
       (CloudFront OAI 経由のみ許可するバケットポリシーをこのスタックが追加する)。
       既にバケットポリシーが設定済みの場合、このスタックが上書きするため事前に確認すること。
 
+  ExistingS3BucketRegion:
+    Type: String
+    Default: us-east-1
+    Description: >
+      ExistingS3BucketName が実際に存在するリージョン。このスタック自体はLambda@Edgeの制約で
+      us-east-1固定だが、保護対象バケットは別リージョンにあっても構わない
+      (CloudFrontのS3オリジンはリージョンを問わず接続できる)。バケットの実リージョンと異なる値を
+      指定するとオリジン接続エラーになるため、必ず実際のリージョンを指定すること。
+
   AppDomainNames:
     Type: CommaDelimitedList
     Description: >
@@ -337,7 +346,7 @@ Resources:
           MinimumProtocolVersion: TLSv1.2_2021
         Origins:
           - Id: protected-origin
-            DomainName: !Sub "${ExistingS3BucketName}.s3.${AWS::Region}.amazonaws.com"
+            DomainName: !Sub "${ExistingS3BucketName}.s3.${ExistingS3BucketRegion}.amazonaws.com"
             S3OriginConfig:
               OriginAccessIdentity: !Sub "origin-access-identity/cloudfront/${CloudFrontOAI}"
           - Id: dummy-origin

@@ -35,6 +35,7 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_IAM CAPABILITY_AUTO_EXPAND \
   --parameter-overrides \
     ExistingS3BucketName=my-existing-bucket \
+    ExistingS3BucketRegion=ap-northeast-1 \
     AppDomainNames="files.example.com\,files2.example.com" \
     AcmCertificateArn=arn:aws:acm:us-east-1:123456789012:certificate/xxxxxxxx \
     HostedZoneId=Z0123456789ABCDEFGHIJ \
