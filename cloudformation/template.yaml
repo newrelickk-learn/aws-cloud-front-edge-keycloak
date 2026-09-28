@@ -1,0 +1,480 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform:
+  - AWS::Serverless-2016-10-31
+  - AWS::LanguageExtensions
+Description: >
+  CloudFront + Keycloak(OIDC) SSO で既存S3バケットを保護する構成。
+  cloudfront-authorization-at-edge (SAR, aws-samples) の Lambda@Edge 関数のみを
+  ネストスタックとして取り込み、CloudFront Distribution とS3バケットポリシーは
+  このテンプレート側で既存バケットに対して定義する。
+  ※ Lambda@Edge の制約により、このスタックは us-east-1 リージョンにのみデプロイすること。
+  ※ デプロイには --capabilities CAPABILITY_IAM CAPABILITY_AUTO_EXPAND が必要。
+
+Parameters:
+  ExistingS3BucketName:
+    Type: String
+    Description: >
+      保護対象となる既存のS3バケット名。バケットの Block Public Access は有効のままで良い
+      (CloudFront OAI 経由のみ許可するバケットポリシーをこのスタックが追加する)。
+      既にバケットポリシーが設定済みの場合、このスタックが上書きするため事前に確認すること。
+
+  AppDomainNames:
+    Type: CommaDelimitedList
+    Description: >
+      CloudFrontに割り当てるカスタムドメイン名 (最大5件、カンマ区切り。例: files.example.com,files2.example.com)。
+      1件目のドメインが Cognito のコールバックURL基準・アプリURL出力などの代表ドメインとして扱われる。
+      全ドメインを1枚のACM証明書(SAN)でカバーする必要がある。6件以上必要な場合はテンプレートの拡張が必要。
+
+  AcmCertificateArn:
+    Type: String
+    Description: CloudFront用ACM証明書のARN (us-east-1リージョンで発行されたものが必須)
+
+  HostedZoneId:
+    Type: String
+    Default: ""
+    Description: >
+      任意。Route53のHosted Zone IDを指定すると AppDomainNames の各ドメインへのAliasレコードを
+      自動作成する(全ドメインが同一Hosted Zoneに属することが前提)。DNSを手動管理する場合は
+      空のままで良い。
+
+  KeycloakIssuerUrl:
+    Type: String
+    Description: >
+      KeycloakのOIDC Issuer URL (例: https://keycloak.example.com/realms/myrealm)。
+      末尾のスラッシュ有無はKeycloakの実際の discovery document (/.well-known/openid-configuration)
+      に合わせること。
+
+  KeycloakClientId:
+    Type: String
+    Description: Keycloakに作成済みの confidential client のクライアントID
+
+  KeycloakClientSecret:
+    Type: String
+    NoEcho: true
+    Description: Keycloakクライアントのシークレット
+
+  CognitoDomainPrefix:
+    Type: String
+    AllowedPattern: "^[a-z0-9-]+$"
+    Description: >
+      Cognito Hosted UI用ドメインのプレフィックス (英数字と-のみ、グローバルに一意である必要がある)。
+      実際のドメインは <prefix>.auth.<region>.amazoncognito.com になる。
+
+  UserPoolGroupName:
+    Type: String
+    Default: NRKKUsers
+    Description: >
+      アクセスを許可するユーザーを制限するCognitoグループ名。
+      Keycloak認証を通過しただけでは誰でもアクセス可能になってしまうため、
+      このグループに所属するユーザーのみアクセスできるよう cloudfront-authorization-at-edge
+      側の UserPoolGroupName パラメータに渡す。デプロイ後、許可したいユーザーを
+      Cognito User Pool 上でこのグループに追加すること。
+
+Conditions:
+  CreateDnsRecord: !Not [!Equals [!Ref HostedZoneId, ""]]
+
+  # AppDomainNames の件数に応じた2〜5件目の存在判定 (最大5件まで対応)
+  HasDomain2: !Not [!Equals [!Length [!Ref AppDomainNames], 1]]
+  HasDomain3: !Or
+    - !Equals [!Length [!Ref AppDomainNames], 3]
+    - !Equals [!Length [!Ref AppDomainNames], 4]
+    - !Equals [!Length [!Ref AppDomainNames], 5]
+  HasDomain4: !Or
+    - !Equals [!Length [!Ref AppDomainNames], 4]
+    - !Equals [!Length [!Ref AppDomainNames], 5]
+  HasDomain5: !Equals [!Length [!Ref AppDomainNames], 5]
+
+  CreateDnsRecord2: !And [!Condition CreateDnsRecord, !Condition HasDomain2]
+  CreateDnsRecord3: !And [!Condition CreateDnsRecord, !Condition HasDomain3]
+  CreateDnsRecord4: !And [!Condition CreateDnsRecord, !Condition HasDomain4]
+  CreateDnsRecord5: !And [!Condition CreateDnsRecord, !Condition HasDomain5]
+
+Resources:
+  # ---------------------------------------------------------------------
+  # Cognito User Pool + Keycloak(OIDC) IdP
+  # ---------------------------------------------------------------------
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub "${AWS::StackName}-user-pool"
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Ref CognitoDomainPrefix
+      UserPoolId: !Ref UserPool
+
+  KeycloakIdentityProvider:
+    Type: AWS::Cognito::UserPoolIdentityProvider
+    Properties:
+      UserPoolId: !Ref UserPool
+      ProviderName: Keycloak
+      ProviderType: OIDC
+      ProviderDetails:
+        client_id: !Ref KeycloakClientId
+        client_secret: !Ref KeycloakClientSecret
+        attributes_request_method: GET
+        oidc_issuer: !Ref KeycloakIssuerUrl
+        authorize_scopes: "openid email profile"
+      AttributeMapping:
+        email: email
+        username: sub
+
+  UserPoolGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      UserPoolId: !Ref UserPool
+      GroupName: !Ref UserPoolGroupName
+      Description: Keycloak SSO経由でS3アクセスを許可されたユーザーのグループ
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    DependsOn: KeycloakIdentityProvider
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: !Sub "${AWS::StackName}-client"
+      GenerateSecret: true
+      AllowedOAuthFlows: [code]
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthScopes: [openid, email, profile, aws.cognito.signin.user.admin, phone]
+      SupportedIdentityProviders: [Keycloak]
+      ExplicitAuthFlows: [ALLOW_REFRESH_TOKEN_AUTH]
+      PreventUserExistenceErrors: ENABLED
+      CallbackURLs:
+        - !Sub
+          - "https://${Domain}/parseauth"
+          - Domain: !Select [0, !Ref AppDomainNames]
+        - !If
+          - HasDomain2
+          - !Sub
+            - "https://${Domain}/parseauth"
+            - Domain: !Select [1, !Ref AppDomainNames]
+          - !Ref AWS::NoValue
+        - !If
+          - HasDomain3
+          - !Sub
+            - "https://${Domain}/parseauth"
+            - Domain: !Select [2, !Ref AppDomainNames]
+          - !Ref AWS::NoValue
+        - !If
+          - HasDomain4
+          - !Sub
+            - "https://${Domain}/parseauth"
+            - Domain: !Select [3, !Ref AppDomainNames]
+          - !Ref AWS::NoValue
+        - !If
+          - HasDomain5
+          - !Sub
+            - "https://${Domain}/parseauth"
+            - Domain: !Select [4, !Ref AppDomainNames]
+          - !Ref AWS::NoValue
+      LogoutURLs:
+        - !Sub
+          - "https://${Domain}/"
+          - Domain: !Select [0, !Ref AppDomainNames]
+        - !If
+          - HasDomain2
+          - !Sub
+            - "https://${Domain}/"
+            - Domain: !Select [1, !Ref AppDomainNames]
+          - !Ref AWS::NoValue
+        - !If
+          - HasDomain3
+          - !Sub
+            - "https://${Domain}/"
+            - Domain: !Select [2, !Ref AppDomainNames]
+          - !Ref AWS::NoValue
+        - !If
+          - HasDomain4
+          - !Sub
+            - "https://${Domain}/"
+            - Domain: !Select [3, !Ref AppDomainNames]
+          - !Ref AWS::NoValue
+        - !If
+          - HasDomain5
+          - !Sub
+            - "https://${Domain}/"
+            - Domain: !Select [4, !Ref AppDomainNames]
+          - !Ref AWS::NoValue
+
+  # ---------------------------------------------------------------------
+  # UserPoolClient の ClientSecret は CloudFormation の GetAtt で取得できないため、
+  # カスタムリソース(Lambda)で DescribeUserPoolClient を呼んで取得する
+  # ---------------------------------------------------------------------
+  ClientSecretFetcherRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DescribeUserPoolClient
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: cognito-idp:DescribeUserPoolClient
+                Resource: !GetAtt UserPool.Arn
+
+  ClientSecretFetcherFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt ClientSecretFetcherRole.Arn
+      Timeout: 30
+      Code:
+        ZipFile: |
+          import json
+          import urllib.request
+          import boto3
+
+          def handler(event, context):
+              request_type = event["RequestType"]
+              physical_id = event.get("PhysicalResourceId") or event["LogicalResourceId"]
+              data = {}
+              try:
+                  if request_type in ("Create", "Update"):
+                      props = event["ResourceProperties"]
+                      client = boto3.client("cognito-idp")
+                      resp = client.describe_user_pool_client(
+                          UserPoolId=props["UserPoolId"],
+                          ClientId=props["ClientId"],
+                      )
+                      data["ClientSecret"] = resp["UserPoolClient"]["ClientSecret"]
+                  _send(event, context, "SUCCESS", data, physical_id)
+              except Exception as e:
+                  _send(event, context, "FAILED", {}, physical_id, reason=str(e))
+
+          def _send(event, context, status, data, physical_id, reason=None):
+              body = json.dumps({
+                  "Status": status,
+                  "Reason": reason or ("See CloudWatch Logs: " + context.log_stream_name),
+                  "PhysicalResourceId": physical_id,
+                  "StackId": event["StackId"],
+                  "RequestId": event["RequestId"],
+                  "LogicalResourceId": event["LogicalResourceId"],
+                  "NoEcho": True,
+                  "Data": data,
+              }).encode("utf-8")
+              req = urllib.request.Request(
+                  url=event["ResponseURL"],
+                  data=body,
+                  method="PUT",
+                  headers={"Content-Type": ""},
+              )
+              urllib.request.urlopen(req)
+
+  UserPoolClientSecret:
+    Type: Custom::CognitoUserPoolClientSecret
+    Properties:
+      ServiceToken: !GetAtt ClientSecretFetcherFunction.Arn
+      UserPoolId: !Ref UserPool
+      ClientId: !Ref UserPoolClient
+
+  # ---------------------------------------------------------------------
+  # cloudfront-authorization-at-edge (SAR) - Lambda@Edge 関数のみ利用する
+  # (CreateCloudFrontDistribution: false のため CloudFront/S3 は自前で構成)
+  # ---------------------------------------------------------------------
+  AuthAtEdge:
+    Type: AWS::Serverless::Application
+    Properties:
+      Location:
+        ApplicationId: arn:aws:serverlessrepo:us-east-1:520945424137:applications/cloudfront-authorization-at-edge
+        SemanticVersion: 2.3.2
+      Parameters:
+        UserPoolArn: !GetAtt UserPool.Arn
+        UserPoolAuthDomain: !Sub "${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com"
+        UserPoolClientId: !Ref UserPoolClient
+        UserPoolClientSecret: !GetAtt UserPoolClientSecret.ClientSecret
+        UserPoolGroupName: !Ref UserPoolGroupName
+        Aliases: !Join [",", !Ref AppDomainNames]
+        AcmCertificateArn: !Ref AcmCertificateArn
+        EnableSPAMode: "false"
+        CreateCloudFrontDistribution: "false"
+
+  # ---------------------------------------------------------------------
+  # CloudFront Distribution (既存S3バケットをOAI経由で保護)
+  # ---------------------------------------------------------------------
+  CloudFrontOAI:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: !Sub
+          - "OAI for ${Domain}"
+          - Domain: !Select [0, !Ref AppDomainNames]
+
+  ExistingBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ExistingS3BucketName
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              CanonicalUser: !GetAtt CloudFrontOAI.S3CanonicalUserId
+            Action: s3:GetObject
+            Resource: !Sub "arn:aws:s3:::${ExistingS3BucketName}/*"
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub "${AWS::StackName} - Keycloak SSO protected S3"
+        DefaultRootObject: index.html
+        Aliases: !Ref AppDomainNames
+        ViewerCertificate:
+          AcmCertificateArn: !Ref AcmCertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+        Origins:
+          - Id: protected-origin
+            DomainName: !Sub "${ExistingS3BucketName}.s3.${AWS::Region}.amazonaws.com"
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub "origin-access-identity/cloudfront/${CloudFrontOAI}"
+          - Id: dummy-origin
+            DomainName: example.org
+            CustomOriginConfig:
+              OriginProtocolPolicy: match-viewer
+              HTTPPort: 80
+              HTTPSPort: 443
+              OriginSSLProtocols: [TLSv1.2]
+        DefaultCacheBehavior:
+          TargetOriginId: protected-origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          ForwardedValues:
+            QueryString: true
+            Cookies:
+              Forward: all
+          LambdaFunctionAssociations:
+            - EventType: viewer-request
+              LambdaFunctionARN: !GetAtt AuthAtEdge.Outputs.CheckAuthHandler
+            - EventType: origin-response
+              LambdaFunctionARN: !GetAtt AuthAtEdge.Outputs.HttpHeadersHandler
+        CacheBehaviors:
+          - PathPattern: /parseauth
+            TargetOriginId: dummy-origin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD]
+            ForwardedValues:
+              QueryString: true
+              Cookies:
+                Forward: all
+            LambdaFunctionAssociations:
+              - EventType: viewer-request
+                LambdaFunctionARN: !GetAtt AuthAtEdge.Outputs.ParseAuthHandler
+          - PathPattern: /refreshauth
+            TargetOriginId: dummy-origin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD]
+            ForwardedValues:
+              QueryString: true
+              Cookies:
+                Forward: all
+            LambdaFunctionAssociations:
+              - EventType: viewer-request
+                LambdaFunctionARN: !GetAtt AuthAtEdge.Outputs.RefreshAuthHandler
+          - PathPattern: /signout
+            TargetOriginId: dummy-origin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD]
+            ForwardedValues:
+              QueryString: true
+              Cookies:
+                Forward: all
+            LambdaFunctionAssociations:
+              - EventType: viewer-request
+                LambdaFunctionARN: !GetAtt AuthAtEdge.Outputs.SignOutHandler
+
+  DnsRecord1:
+    Type: AWS::Route53::RecordSet
+    Condition: CreateDnsRecord
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Select [0, !Ref AppDomainNames]
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt CloudFrontDistribution.DomainName
+        # CloudFrontのAliasターゲット用HostedZoneIdは全リージョン共通の固定値
+        HostedZoneId: Z2FDTNDATAQYW2
+
+  DnsRecord2:
+    Type: AWS::Route53::RecordSet
+    Condition: CreateDnsRecord2
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Select [1, !Ref AppDomainNames]
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt CloudFrontDistribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2
+
+  DnsRecord3:
+    Type: AWS::Route53::RecordSet
+    Condition: CreateDnsRecord3
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Select [2, !Ref AppDomainNames]
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt CloudFrontDistribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2
+
+  DnsRecord4:
+    Type: AWS::Route53::RecordSet
+    Condition: CreateDnsRecord4
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Select [3, !Ref AppDomainNames]
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt CloudFrontDistribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2
+
+  DnsRecord5:
+    Type: AWS::Route53::RecordSet
+    Condition: CreateDnsRecord5
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Select [4, !Ref AppDomainNames]
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt CloudFrontDistribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2
+
+Outputs:
+  CloudFrontDistributionDomainName:
+    Description: CloudFrontのデフォルトドメイン名
+    Value: !GetAtt CloudFrontDistribution.DomainName
+
+  AppUrl:
+    Description: アプリケーションURL (代表ドメイン=1件目のAppDomainNames)
+    Value: !Sub
+      - "https://${Domain}/"
+      - Domain: !Select [0, !Ref AppDomainNames]
+
+  CognitoUserPoolId:
+    Value: !Ref UserPool
+
+  CognitoUserPoolClientId:
+    Value: !Ref UserPoolClient
+
+  CognitoHostedUIDomain:
+    Description: Cognito Hosted UIのドメイン
+    Value: !Sub "${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com"
+
+  KeycloakRedirectUriToRegister:
+    Description: >
+      Keycloak側のクライアント設定 (Valid Redirect URIs) に登録が必要なURI。
+      このURIをKeycloak管理コンソールで許可リストに追加すること。
+    Value: !Sub "https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com/oauth2/idpresponse"
