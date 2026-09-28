@@ -74,15 +74,15 @@ Conditions:
   CreateDnsRecord: !Not [!Equals [!Ref HostedZoneId, ""]]
 
   # AppDomainNames の件数に応じた2〜5件目の存在判定 (最大5件まで対応)
-  HasDomain2: !Not [!Equals [!Length [!Ref AppDomainNames], 1]]
+  HasDomain2: !Not [!Equals [{"Fn::Length": !Ref AppDomainNames}, 1]]
   HasDomain3: !Or
-    - !Equals [!Length [!Ref AppDomainNames], 3]
-    - !Equals [!Length [!Ref AppDomainNames], 4]
-    - !Equals [!Length [!Ref AppDomainNames], 5]
+    - !Equals [{"Fn::Length": !Ref AppDomainNames}, 3]
+    - !Equals [{"Fn::Length": !Ref AppDomainNames}, 4]
+    - !Equals [{"Fn::Length": !Ref AppDomainNames}, 5]
   HasDomain4: !Or
-    - !Equals [!Length [!Ref AppDomainNames], 4]
-    - !Equals [!Length [!Ref AppDomainNames], 5]
-  HasDomain5: !Equals [!Length [!Ref AppDomainNames], 5]
+    - !Equals [{"Fn::Length": !Ref AppDomainNames}, 4]
+    - !Equals [{"Fn::Length": !Ref AppDomainNames}, 5]
+  HasDomain5: !Equals [{"Fn::Length": !Ref AppDomainNames}, 5]
 
   CreateDnsRecord2: !And [!Condition CreateDnsRecord, !Condition HasDomain2]
   CreateDnsRecord3: !And [!Condition CreateDnsRecord, !Condition HasDomain3]
