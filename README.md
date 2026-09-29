@@ -17,6 +17,8 @@ Lambda@Edge関数を利用し、Keycloak(OIDC)をIdPとしたSSOで既存のS3�
   sign-out / http-headers)だけを流用する
 - CloudFront Distribution・S3バケットポリシー(OAI)はテンプレート側で既存バケットに対して定義する
 - カスタムドメイン(**最大5件**) + ACM証明書、Route53 Aliasレコード(任意)に対応
+- Pre Token Generation Lambdaで、Keycloak側のグループ membership を `cognito:groups` クレームに
+  同期し、指定グループに所属しているユーザーのみアクセスを許可する
 
 ## 前提条件
 
@@ -24,6 +26,10 @@ Lambda@Edge関数を利用し、Keycloak(OIDC)をIdPとしたSSOで既存のS3�
 - ACM証明書は **us-east-1** で発行されたもの
 - 保護対象の既存S3バケットは同じAWSアカウント内に存在すること
 - Keycloak側に confidential client (Client Authentication ON) が作成済みであること
+- Keycloak側で、アクセスを許可したいユーザーが所属するグループ(例: `NRKKUsers`)を作成済みであること。
+  さらに、そのclientに **Group Membership** プロトコルマッパーを追加し、`groups` クレームを
+  ID token / Access token に含める設定が必要(Client scopes → 対象scope → Mappers →
+  Add mapper → By configuration → Group Membership。Token Claim Name は `groups`)
 
 ## デプロイ手順
 
@@ -63,21 +69,29 @@ aws cloudformation deploy \
 (`https://<CognitoDomainPrefix>.auth.us-east-1.amazoncognito.com/oauth2/idpresponse`)を、
 Keycloak管理コンソールの対象クライアントの **Valid Redirect URIs** に追加する。
 
-### 2. アクセス許可ユーザーの追加
+### 2. アクセス制御について
 
-Keycloak認証を通過しただけでは誰でもアクセス可能になってしまうため、
-cloudfront-authorization-at-edge は `UserPoolGroupName` で指定したCognitoグループに
-所属するユーザーのみアクセスを許可する仕組みになっている。
+このテンプレートは、Keycloak側のグループ membership を Cognitoの`cognito:groups`クレームに
+同期する(Pre Token Generation Lambda)ことでアクセス制御している。具体的には:
 
-Cognito User Pool (`CognitoUserPoolId` Output) の `NRKKUsers`(既定値) グループに、
-アクセスを許可したいユーザーを追加する。Keycloak経由でログインしたユーザーは
-初回ログイン時にUser Pool上にユーザーが作成されるため、それ以降にグループへ追加する。
+1. Keycloakでログインすると、そのユーザーが所属するグループ一覧が `groups` クレームとして
+   IDトークンに含まれる(前提条件で設定したプロトコルマッパーによる)
+2. CognitoのAttributeMapping経由で、この値がログインごとに `custom:groups` 属性に反映される
+3. Pre Token Generation Lambda が `custom:groups` を読み取り、そのままJWTの`cognito:groups`
+   クレームに上書き注入する
+4. `cloudfront-authorization-at-edge` が `UserPoolGroupName`(デプロイ時に指定したグループ名、
+   既定値`NRKKUsers`)がその`cognito:groups`に含まれているかを判定し、アクセス可否を決める
+
+つまり**Cognito側でのグループ管理は不要で、Keycloak側でユーザーをグループに追加/削除するだけで
+アクセス許可が同期される**。前提条件のプロトコルマッパー設定を忘れると`groups`クレームが
+送られず、常にアクセス拒否になるので注意。
 
 ### 3. 動作確認
 
 `AppUrl` Outputの値 (`AppDomainName1`のURL) にアクセスし、Keycloakのログイン画面に
-リダイレクトされることを確認する。ログイン後、グループに所属していないユーザーは
-アクセスを拒否されることも確認する。
+リダイレクトされることを確認する。ログイン後、`UserPoolGroupName`に指定したグループに
+Keycloak側で所属しているユーザーはコンテンツが表示され、所属していないユーザーは
+アクセスが拒否されることを確認する。
 
 ## 既知の注意点
 
