@@ -3,11 +3,14 @@
 [cloudfront-authorization-at-edge](https://github.com/aws-samples/cloudfront-authorization-at-edge) (AWS SAR, v2.3.2) の
 Lambda@Edge関数を利用し、Keycloak(OIDC)をIdPとしたSSOで既存のS3バケットをCloudFront経由のみ閲覧可能にする。
 
-[![Launch Stack](https://s3.amazonaws.com/cloudformation-examples/cloudformation-launch-stack.png)](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateURL=https%3A%2F%2Fraw.githubusercontent.com%2Fnewrelickk-learn%2Faws-cloud-front-edge-keycloak%2Fmain%2Fcloudformation%2Ftemplate.yaml&stackName=keycloak-protected-s3)
+[![Launch Stack](https://s3.amazonaws.com/cloudformation-examples/cloudformation-launch-stack.png)](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateURL=https%3A%2F%2Fnrkk-learn.s3.ap-northeast-1.amazonaws.com%2Fpublic%2Fcfn%2Faws-cloud-front-edge-keycloak%2Ftemplate.yaml&stackName=keycloak-protected-s3)
 
-> **注意**: このボタンはリポジトリが **public** になっている前提で動作する。CloudFormationサービスが
-> `templateURL` を認証なしでフェッチするため、privateリポジトリのままだとスタック作成時にテンプレート取得エラーになる。
-> また、Lambda@Edgeの制約上デプロイ先リージョンは常に `us-east-1` 固定にしている。
+> **注意**: CloudFormationの「クイック作成」の`templateURL`は**S3にホストされたオブジェクトのURLのみ**を
+> サポートしており、GitHubのraw URL等は使えない。このボタンはS3バケット`nrkk-learn`
+> (`public/cfn/aws-cloud-front-edge-keycloak/template.yaml`)にアップロード済みのテンプレートを指している。
+> テンプレートを更新した場合は、このS3オブジェクトも同期して更新すること。
+> また、Lambda@Edgeの制約上デプロイ先リージョンは常に `us-east-1` 固定にしている
+> (テンプレート自体はS3上のどのリージョンにあっても取得可能)。
 
 ## アーキテクチャ
 
