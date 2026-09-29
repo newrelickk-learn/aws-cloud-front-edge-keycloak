@@ -248,3 +248,41 @@ aws cloudformation describe-stacks --region us-east-1 --stack-name <スタック
   アクセス時に拒否される場合、`groups`クレームがトークンに含まれていない可能性が高い。
   Keycloakのclient設定でGroup Membershipマッパーが有効か、対象ユーザーが`UserPoolGroupName`と
   同名のグループに所属しているかを確認する
+- **ログイン2回目以降の`authentication_expired`/`temporarily_unavailable`エラー**: Cognito Hosted UI
+  側(`<CognitoDomainPrefix>.auth.us-east-1.amazoncognito.com`)に残った古いセッション/CSRF Cookieが
+  原因になることが多い。アプリのドメインだけでなく、Cognito Hosted UIのドメインのCookieも削除して
+  再試行する
+- **ログインのたびに「Continue with Keycloak」ボタンの画面が挟まる**: Cognitoが「前回のログインを
+  覚えている」場合に出る画面で、cloudfront-authorization-at-edge側のLambda@Edgeコード
+  (SARで配布されているビルド済みコードで、このテンプレートからは変更できない)がリダイレクトURLを
+  組み立てている。完全新規のセッションであれば出ないこともあるが、消したい場合はそのプロジェクトを
+  フォークしてコードを改造する必要があり、このテンプレートの範囲では対応していない
+
+## 5. Browser Agent(New Relic Browser等)でのログインユーザー情報の取得
+
+このテンプレートは`AuthAtEdge`の`CookieSettings`で、`idToken`のCookieだけ`HttpOnly`を外して
+JavaScriptから読めるようにしている(`accessToken`/`refreshToken`は`HttpOnly`のまま)。
+ログインユーザーのemail等をBrowser Agentの計測に紐付けたい場合は、ページ側のJSで以下のように
+`idToken`(JWT)を取得・デコードする。
+
+```js
+function getKeycloakUserFromIdToken() {
+  const match = document.cookie.match(/idToken=([^;]+)/);
+  if (!match) return null;
+  const payload = match[1].split('.')[1];
+  const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
+  return JSON.parse(json);
+}
+
+const user = getKeycloakUserFromIdToken();
+if (user) {
+  // New Relic Browser の例
+  newrelic.setUserId(user.email);
+  newrelic.setCustomAttribute('cognitoUsername', user['cognito:username']);
+}
+```
+
+`email`と`cognito:username`(Keycloak連携なので`Keycloak_xxxxxxxx`形式)がJWTのclaimに含まれている。
+
+**セキュリティ上のトレードオフ**: `idToken`をJSから読めるようにすると、ページ内にXSS脆弱性がある場合に
+トークンを盗まれるリスクが上がる。計測目的以外の用途では有効化しないこと。

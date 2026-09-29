@@ -355,8 +355,10 @@ Resources:
         AlternateDomainNames: !Ref AppDomainName1
         EnableSPAMode: "false"
         CreateCloudFrontDistribution: "false"
-        # TODO: トラブルシューティング用の一時設定。原因判明後は "none" に戻すこと
-        LogLevel: debug
+        # nested app自身もLambda@Edge内で認可リクエストのscopeを組み立てるため、
+        # UserPoolClient.AllowedOAuthScopes と同じ内容に揃える必要がある
+        # (aws.cognito.signin.user.adminを含めるとCognito側がinvalid_scopeで拒否する)
+        OAuthScopes: "phone,email,profile,openid"
         CookieSettings: |-
           {
             "idToken": "Path=/; Secure; SameSite=Lax",
