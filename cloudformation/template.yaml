@@ -1,104 +1,111 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: >
-  CloudFront + Keycloak(OIDC) SSO で既存S3バケットを保護する構成。
-  cloudfront-authorization-at-edge (SAR, aws-samples) の Lambda@Edge 関数のみを
-  ネストスタックとして取り込み、CloudFront Distribution とS3バケットポリシーは
-  このテンプレート側で既存バケットに対して定義する。
-  ※ Lambda@Edge の制約により、このスタックは us-east-1 リージョンにのみデプロイすること。
-  ※ デプロイには --capabilities CAPABILITY_IAM CAPABILITY_AUTO_EXPAND が必要。
+  Protects an existing S3 bucket behind CloudFront with Keycloak (OIDC) SSO.
+  Pulls in only the Lambda@Edge functions from cloudfront-authorization-at-edge
+  (SAR, aws-samples) as a nested stack; the CloudFront distribution and S3 bucket
+  policy for the existing bucket are defined directly in this template.
+  NOTE: due to Lambda@Edge constraints, this stack must be deployed in us-east-1.
+  NOTE: deployment requires --capabilities CAPABILITY_IAM CAPABILITY_AUTO_EXPAND.
 
 Parameters:
   ExistingS3BucketName:
     Type: String
     Description: >
-      保護対象となる既存のS3バケット名。バケットの Block Public Access は有効のままで良い
-      (CloudFront OAI 経由のみ許可するバケットポリシーをこのスタックが追加する)。
-      既にバケットポリシーが設定済みの場合、このスタックが上書きするため事前に確認すること。
+      Name of the existing S3 bucket to protect. Block Public Access can stay
+      enabled (this stack adds a bucket policy that only allows access via the
+      CloudFront OAI). If the bucket already has a bucket policy, review it
+      first: this stack's policy replaces it entirely.
 
   ExistingS3BucketRegion:
     Type: String
     Default: us-east-1
     Description: >
-      ExistingS3BucketName が実際に存在するリージョン。このスタック自体はLambda@Edgeの制約で
-      us-east-1固定だが、保護対象バケットは別リージョンにあっても構わない
-      (CloudFrontのS3オリジンはリージョンを問わず接続できる)。バケットの実リージョンと異なる値を
-      指定するとオリジン接続エラーになるため、必ず実際のリージョンを指定すること。
+      The region where ExistingS3BucketName actually lives. This stack itself
+      must deploy to us-east-1 (Lambda@Edge constraint), but the protected
+      bucket can be in any region (a CloudFront S3 origin works cross-region).
+      A value that doesn't match the bucket's real region causes an origin
+      connection error, so set this accurately.
 
   AppDomainName1:
     Type: String
     Description: >
-      CloudFrontに割り当てるカスタムドメイン名(代表ドメイン、必須。例: files.example.com)。
-      Cognito のコールバックURL基準・アプリURL出力などの基準ドメインとして扱われる。
+      Custom domain name to attach to CloudFront (primary domain, required.
+      e.g. files.example.com). Used as the base domain for Cognito callback
+      URLs and the AppUrl output.
 
   AppDomainName2:
     Type: String
     Default: ""
-    Description: 追加のカスタムドメイン名(任意、2件目)。使わない場合は空のままで良い。
+    Description: Additional custom domain (optional, 2nd). Leave blank if unused.
 
   AppDomainName3:
     Type: String
     Default: ""
-    Description: 追加のカスタムドメイン名(任意、3件目)。使わない場合は空のままで良い。
+    Description: Additional custom domain (optional, 3rd). Leave blank if unused.
 
   AppDomainName4:
     Type: String
     Default: ""
-    Description: 追加のカスタムドメイン名(任意、4件目)。使わない場合は空のままで良い。
+    Description: Additional custom domain (optional, 4th). Leave blank if unused.
 
   AppDomainName5:
     Type: String
     Default: ""
     Description: >
-      追加のカスタムドメイン名(任意、5件目)。使わない場合は空のままで良い。
-      AppDomainName1〜5で指定した全ドメインを1枚のACM証明書(SAN)でカバーする必要がある。
-      6件以上必要な場合はテンプレートの拡張(AppDomainName6以降とそれに対応するCondition/リソースの追加)が必要。
+      Additional custom domain (optional, 5th). Leave blank if unused. All
+      domains given across AppDomainName1-5 must be covered by a single ACM
+      certificate (SAN). Supporting more than 5 domains requires extending the
+      template (add AppDomainName6+ and the matching Conditions/resources).
 
   AcmCertificateArn:
     Type: String
-    Description: CloudFront用ACM証明書のARN (us-east-1リージョンで発行されたものが必須)
+    Description: ARN of the ACM certificate for CloudFront (must be issued in us-east-1)
 
   HostedZoneId:
     Type: String
     Default: ""
     Description: >
-      任意。Route53のHosted Zone IDを指定すると AppDomainName1〜5 の各ドメインへのAliasレコードを
-      自動作成する(全ドメインが同一Hosted Zoneに属することが前提)。DNSを手動管理する場合は
-      空のままで良い。
+      Optional. When set, a Route53 Hosted Zone ID for which this stack will
+      create Alias records for each of AppDomainName1-5 (assumes all domains
+      belong to the same Hosted Zone). Leave blank when managing DNS manually.
 
   KeycloakIssuerUrl:
     Type: String
     Description: >
-      KeycloakのOIDC Issuer URL (例: https://keycloak.example.com/realms/myrealm)。
-      末尾のスラッシュ有無はKeycloakの実際の discovery document (/.well-known/openid-configuration)
-      に合わせること。
+      Keycloak's OIDC issuer URL (e.g. https://keycloak.example.com/realms/myrealm).
+      Whether it has a trailing slash must match what Keycloak's actual
+      discovery document (/.well-known/openid-configuration) reports.
 
   KeycloakClientId:
     Type: String
-    Description: Keycloakに作成済みの confidential client のクライアントID
+    Description: Client ID of the confidential client already created in Keycloak
 
   KeycloakClientSecret:
     Type: String
     NoEcho: true
-    Description: Keycloakクライアントのシークレット
+    Description: Client secret of the Keycloak confidential client
 
   CognitoDomainPrefix:
     Type: String
     AllowedPattern: "^[a-z0-9-]+$"
     Description: >
-      Cognito Hosted UI用ドメインのプレフィックス (英数字と-のみ、グローバルに一意である必要がある)。
-      実際のドメインは <prefix>.auth.<region>.amazoncognito.com になる。
+      Prefix for the Cognito Hosted UI domain (letters, digits and - only;
+      must be globally unique). The resulting domain is
+      <prefix>.auth.<region>.amazoncognito.com.
 
   UserPoolGroupName:
     Type: String
     Default: NRKKUsers
     Description: >
-      アクセスを許可するグループ名。Keycloak側で同名のグループを作成し、アクセスを許可したい
-      ユーザーをそのグループに所属させること。ログイン時にKeycloakから送られるグループ一覧
-      (groupsクレーム)が Pre Token Generation Lambda 経由で cognito:groups クレームに反映され、
-      cloudfront-authorization-at-edge がこの値の有無でアクセス可否を判定する。
-      ※ Keycloak側のclientに「Group Membership」プロトコルマッパーを追加し、groupsクレームを
-      ID token / Access tokenに含める設定が別途必要。
+      Name of the group that is allowed access. Create a group with this same
+      name in Keycloak and add the users you want to grant access to it. At
+      sign-in, the group list Keycloak sends (the groups claim) is copied into
+      the cognito:groups claim via a Pre Token Generation Lambda, and
+      cloudfront-authorization-at-edge grants or denies access based on
+      whether this value is present there.
+      NOTE: this also requires adding a "Group Membership" protocol mapper to
+      the Keycloak client so the groups claim is included in the ID/access token.
 
 Conditions:
   CreateDnsRecord: !Not [!Equals [!Ref HostedZoneId, ""]]
@@ -525,11 +532,11 @@ Resources:
 
 Outputs:
   CloudFrontDistributionDomainName:
-    Description: CloudFrontのデフォルトドメイン名
+    Description: CloudFront's default domain name
     Value: !GetAtt CloudFrontDistribution.DomainName
 
   AppUrl:
-    Description: アプリケーションURL (代表ドメイン=AppDomainName1)
+    Description: Application URL (primary domain = AppDomainName1)
     Value: !Sub "https://${AppDomainName1}/"
 
   CognitoUserPoolId:
@@ -539,11 +546,11 @@ Outputs:
     Value: !Ref UserPoolClient
 
   CognitoHostedUIDomain:
-    Description: Cognito Hosted UIのドメイン
+    Description: Cognito Hosted UI domain
     Value: !Sub "${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com"
 
   KeycloakRedirectUriToRegister:
     Description: >
-      Keycloak側のクライアント設定 (Valid Redirect URIs) に登録が必要なURI。
-      このURIをKeycloak管理コンソールで許可リストに追加すること。
+      URI that must be registered in the Keycloak client's Valid Redirect URIs.
+      Add this URI to the allow-list in the Keycloak admin console.
     Value: !Sub "https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com/oauth2/idpresponse"
